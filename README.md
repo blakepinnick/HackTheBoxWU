@@ -5,6 +5,7 @@ This repository contains my write-ups for Hack The Box challenges. I'm new to th
 Organization
 -----------------------------------
 Write-ups are categorized by:
+
   Difficulty: Easy, Medium, Hard
   
   Operating System: Windows, Linux

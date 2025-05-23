@@ -6,6 +6,7 @@ Organization
 -----------------------------------
 Write-ups are categorized by:
   Difficulty: Easy, Medium, Hard
+  
   Operating System: Windows, Linux
 
 Purpose:

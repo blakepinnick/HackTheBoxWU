@@ -13,4 +13,5 @@ Write-ups are categorized by:
 Purpose:
 -----------------------------------
   Document my solutions, thought processes, and lessons learned from Hack The Box challenges. Feedback and suggestions are welcome!
+  
   I want to develop my github throughout my career and though no better way to start than with my write ups!

